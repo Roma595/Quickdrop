@@ -2,8 +2,10 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
+	"image/png"
 	"io"
 	"log"
 	"net"
@@ -12,17 +14,16 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/fatih/color"
-	"github.com/mdp/qrterminal/v3"
 	"github.com/schollz/progressbar/v3"
+	"github.com/skip2/go-qrcode"
 	"github.com/urfave/cli/v2"
 )
 
-var Version = "dev"
-
-// 🆕 Современный HTML с Drag & Drop и Fetch API
+// HTML-страница для загрузки файлов с телефона
 const uploadHTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -33,25 +34,10 @@ const uploadHTML = `<!DOCTYPE html>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px 20px; background: #f0f2f5; color: #333; }
         .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 400px; margin: 0 auto; }
         h2 { margin-top: 0; color: #1a1a1a; }
-        
-        /* Стили для зоны Drag & Drop */
-        #drop-zone { 
-            border: 2px dashed #ccc; 
-            border-radius: 12px; 
-            padding: 40px 20px; 
-            margin: 20px 0; 
-            transition: all 0.3s ease; 
-            cursor: pointer;
-            background: #fafafa;
-        }
-        #drop-zone.hover { 
-            border-color: #007bff; 
-            background: #e7f1ff; 
-            transform: scale(1.02);
-        }
+        #drop-zone { border: 2px dashed #ccc; border-radius: 12px; padding: 40px 20px; margin: 20px 0; transition: all 0.3s ease; cursor: pointer; background: #fafafa; }
+        #drop-zone.hover { border-color: #007bff; background: #e7f1ff; transform: scale(1.02); }
         #drop-zone p { margin: 0; color: #666; font-size: 14px; }
         #drop-zone .icon { font-size: 40px; margin-bottom: 10px; }
-        
         #status { margin-top: 20px; font-weight: bold; min-height: 20px; }
         .success { color: #28a745; }
         .error { color: #dc3545; }
@@ -61,65 +47,38 @@ const uploadHTML = `<!DOCTYPE html>
 <body>
     <div class="container">
         <h2>📤 Отправить файл</h2>
-        
         <div id="drop-zone">
             <div class="icon">📁</div>
             <p>Перетащи файл сюда<br>или нажми для выбора</p>
         </div>
         <input type="file" id="file-input" hidden>
-        
         <div id="status"></div>
     </div>
-
     <script>
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('file-input');
         const status = document.getElementById('status');
-
-        // Клик по зоне открывает выбор файла
         dropZone.addEventListener('click', () => fileInput.click());
-
-        // Обработка Drag & Drop
-        dropZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropZone.classList.add('hover');
-        });
-
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('hover');
-        });
-
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('hover'); });
+        dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('hover'); });
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             dropZone.classList.remove('hover');
-            if (e.dataTransfer.files.length) {
-                uploadFile(e.dataTransfer.files[0]);
-            }
+            if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
         });
-
-        // Обработка выбора через клик
         fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length) {
-                uploadFile(e.target.files[0]);
-            }
+            if (e.target.files.length) uploadFile(e.target.files[0]);
         });
-
-        // Функция отправки файла через Fetch API (без перезагрузки страницы)
         function uploadFile(file) {
             const formData = new FormData();
             formData.append('file', file);
-
             status.innerHTML = '<span class="loading">⏳ Загрузка...</span>';
-            dropZone.style.pointerEvents = 'none'; // Блокируем повторные клики
-
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
+            dropZone.style.pointerEvents = 'none';
+            fetch('/upload', { method: 'POST', body: formData })
             .then(response => {
                 if (response.ok) {
                     status.innerHTML = '<span class="success">✅ Файл успешно отправлен!</span>';
-                    dropZone.style.display = 'none'; // Скрываем зону после успеха
+                    dropZone.style.display = 'none';
                 } else {
                     status.innerHTML = '<span class="error">❌ Ошибка при загрузке</span>';
                     dropZone.style.pointerEvents = 'auto';
@@ -140,9 +99,8 @@ func main() {
 	errorColor := color.New(color.FgRed, color.Bold)
 
 	app := &cli.App{
-		Name:    "quickdrop",
-		Usage:   "Мгновенный обмен файлами между устройствами через QR-код",
-		Version: Version,
+		Name:  "quickdrop",
+		Usage: "Мгновенный обмен файлами между устройствами через QR-код",
 		Commands: []*cli.Command{
 			{
 				Name:      "send",
@@ -159,8 +117,15 @@ func main() {
 			{
 				Name:  "receive",
 				Usage: "Принять файл с телефона",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "max-size",
+						Value: "2GB",
+						Usage: "Максимальный размер принимаемого файла (например: 500MB, 2GB, 0 = без лимита)",
+					},
+				},
 				Action: func(c *cli.Context) error {
-					return receiveFile(infoColor, successColor, errorColor)
+					return receiveFile(c.String("max-size"), infoColor, successColor, errorColor)
 				},
 			},
 		},
@@ -169,6 +134,71 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// generateQRASCII генерирует QR-код как ASCII-арт (32x32 символа)
+func generateQRASCII(url string) (string, error) {
+	const qrSize = 40
+	pngSize := qrSize * 2 // 64x64 пикселя
+
+	qrCode, err := qrcode.New(url, qrcode.Medium)
+	if err != nil {
+		return "", fmt.Errorf("ошибка генерации QR: %w", err)
+	}
+
+	pngBytes, err := qrCode.PNG(pngSize)
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания PNG: %w", err)
+	}
+
+	img, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		return "", fmt.Errorf("ошибка декодирования PNG: %w", err)
+	}
+
+	width := img.Bounds().Dx()
+	height := img.Bounds().Dy()
+
+	scaleX := width / qrSize
+	scaleY := height / qrSize
+
+	var sb strings.Builder
+
+	for y := 0; y < qrSize; y++ {
+		for x := 0; x < qrSize; x++ {
+			px := x*scaleX + scaleX/2
+			py := y*scaleY + scaleY/2
+
+			r, g, b, _ := img.At(px, py).RGBA()
+			brightness := (float64(r) + float64(g) + float64(b)) / 3.0
+
+			if brightness < 32896 {
+				sb.WriteString("██")
+			} else {
+				sb.WriteString("  ")
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String(), nil
+}
+
+func printQR(url string, info *color.Color) {
+	fmt.Println()
+	info.Printf("🌐 URL: %s\n", url)
+	fmt.Println("📱 Отсканируй QR-код:")
+	fmt.Println()
+
+	asciiQR, err := generateQRASCII(url)
+	if err != nil {
+		errorColor := color.New(color.FgRed, color.Bold)
+		errorColor.Printf("️  Не удалось сгенерировать QR-код: %v\n", err)
+		return
+	}
+
+	fmt.Print(asciiQR)
+	fmt.Println()
 }
 
 func sendFile(filePath string, info, success, error *color.Color) error {
@@ -191,7 +221,6 @@ func sendFile(filePath string, info, success, error *color.Color) error {
 
 	if fileInfo.IsDir() {
 		info.Println("📁 Обнаружена папка. Упаковываем в ZIP...")
-
 		tmpFile, err := os.CreateTemp("", "quickdrop-*.zip")
 		if err != nil {
 			error.Printf("Не удалось создать временный файл: %v\n", err)
@@ -235,7 +264,6 @@ func sendFile(filePath string, info, success, error *color.Color) error {
 
 	url := fmt.Sprintf("http://%s:%d/download", localIP, port)
 
-	// 🆕 Копируем URL в буфер обмена
 	if err := clipboard.WriteAll(url); err == nil {
 		success.Println("📋 Ссылка скопирована в буфер обмена!")
 	}
@@ -246,7 +274,6 @@ func sendFile(filePath string, info, success, error *color.Color) error {
 	http.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", finalFileName))
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
-
 		info.Printf("📥 Начинаем передачу: %s (%.2f MB)\n", finalFileName, float64(fileSize)/(1024*1024))
 
 		file, err := os.Open(finalFilePath)
@@ -285,7 +312,12 @@ func sendFile(filePath string, info, success, error *color.Color) error {
 	printQR(url, info)
 	success.Printf("✅ Сервер запущен! Ждем скачивания...\n")
 
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", port)}
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		IdleTimeout:  5 * time.Minute,
+	}
 
 	go func() {
 		<-done
@@ -300,7 +332,16 @@ func sendFile(filePath string, info, success, error *color.Color) error {
 	return nil
 }
 
-func receiveFile(info, success, error *color.Color) error {
+func receiveFile(maxSizeStr string, info, success, error *color.Color) error {
+	maxSize, err := parseSize(maxSizeStr)
+	if err != nil {
+		error.Printf("Ошибка разбора размера: %v\n", err)
+		return err
+	}
+	if maxSize == 0 {
+		maxSize = 100 << 30 // 100 ГБ как разумный максимум
+	}
+
 	receiveDir := "./received"
 	os.MkdirAll(receiveDir, os.ModePerm)
 
@@ -318,9 +359,8 @@ func receiveFile(info, success, error *color.Color) error {
 
 	url := fmt.Sprintf("http://%s:%d/", localIP, port)
 
-	// 🆕 Копируем URL в буфер обмена
 	if err := clipboard.WriteAll(url); err == nil {
-		success.Println(" Ссылка скопирована в буфер обмена!")
+		success.Println("📋 Ссылка скопирована в буфер обмена!")
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -338,10 +378,14 @@ func receiveFile(info, success, error *color.Color) error {
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
-		err := r.ParseMultipartForm(100 << 20)
+		r.Body = http.MaxBytesReader(w, r.Body, maxSize)
+		err := r.ParseMultipartForm(maxSize)
 		if err != nil {
-			http.Error(w, "Файл слишком большой", http.StatusBadRequest)
+			if strings.Contains(err.Error(), "http: request body too large") {
+				http.Error(w, fmt.Sprintf("Файл слишком большой (лимит: %s)", maxSizeStr), http.StatusRequestEntityTooLarge)
+			} else {
+				http.Error(w, "Ошибка формы", http.StatusBadRequest)
+			}
 			return
 		}
 
@@ -352,7 +396,7 @@ func receiveFile(info, success, error *color.Color) error {
 		}
 		defer file.Close()
 
-		info.Printf(" Получаем файл: %s (%.2f MB)\n", header.Filename, float64(header.Size)/(1024*1024))
+		info.Printf("📥 Получаем файл: %s (%.2f MB)\n", header.Filename, float64(header.Size)/(1024*1024))
 
 		bar := progressbar.NewOptions64(
 			header.Size,
@@ -370,7 +414,6 @@ func receiveFile(info, success, error *color.Color) error {
 			}),
 		)
 
-		// 🆕 Умное имя файла (защита от перезаписи)
 		dstPath := filepath.Join(receiveDir, header.Filename)
 		dstPath = getSafePath(dstPath)
 
@@ -389,27 +432,62 @@ func receiveFile(info, success, error *color.Color) error {
 
 		info.Printf("✅ Сохранено как: %s (%.2f MB)\n", filepath.Base(dstPath), float64(written)/(1024*1024))
 
-		// Возвращаем JSON или текст для JS
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, "OK")
 	})
 
 	printQR(url, info)
 	success.Printf("✅ Режим приема включен! Файлы сохраняются в: %s\n", receiveDir)
-	success.Printf("️  Нажми Ctrl+C для остановки.\n")
+	success.Printf("📏 Лимит размера файла: %s\n", maxSizeStr)
+	success.Printf("⏸️  Нажми Ctrl+C для остановки.\n")
 
-	return http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+		IdleTimeout:  5 * time.Minute,
+	}
+
+	return srv.ListenAndServe()
 }
 
-// 🆕 Функция для защиты от перезаписи файлов
+// parseSize парсит строку вида "500MB", "2GB", "1TB" в байты
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "0" || s == "" {
+		return 0, nil
+	}
+
+	multipliers := map[string]int64{
+		"KB": 1024,
+		"MB": 1024 * 1024,
+		"GB": 1024 * 1024 * 1024,
+		"TB": 1024 * 1024 * 1024 * 1024,
+	}
+
+	for suffix, mult := range multipliers {
+		if strings.HasSuffix(s, suffix) {
+			numStr := strings.TrimSuffix(s, suffix)
+			var num float64
+			_, err := fmt.Sscanf(numStr, "%f", &num)
+			if err != nil {
+				return 0, fmt.Errorf("неверный формат размера: %s", s)
+			}
+			return int64(num * float64(mult)), nil
+		}
+	}
+
+	var num int64
+	_, err := fmt.Sscanf(s, "%d", &num)
+	return num, err
+}
+
 func getSafePath(dstPath string) string {
 	if _, err := os.Stat(dstPath); os.IsNotExist(err) {
 		return dstPath
 	}
-
 	ext := filepath.Ext(dstPath)
 	base := strings.TrimSuffix(dstPath, ext)
-
 	for i := 1; ; i++ {
 		newPath := fmt.Sprintf("%s (%d)%s", base, i, ext)
 		if _, err := os.Stat(newPath); os.IsNotExist(err) {
@@ -492,25 +570,51 @@ func getFreePort() (int, error) {
 }
 
 func getLocalIP() (string, error) {
-	addrs, err := net.InterfaceAddrs()
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
 	}
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String(), nil
+
+	var candidates []string
+
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		name := strings.ToLower(iface.Name)
+		if strings.Contains(name, "virtual") ||
+			strings.Contains(name, "docker") ||
+			strings.Contains(name, "vmware") ||
+			strings.Contains(name, "hyper-v") ||
+			strings.Contains(name, "wsl") {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					if strings.Contains(name, "wi-fi") ||
+						strings.Contains(name, "wireless") ||
+						strings.Contains(name, "wlan") ||
+						strings.Contains(name, "ethernet") ||
+						strings.Contains(name, "подключение по локальной сети") {
+						return ipnet.IP.String(), nil
+					}
+					candidates = append(candidates, ipnet.IP.String())
+				}
 			}
 		}
 	}
-	return "", fmt.Errorf("локальный IP не найден")
-}
 
-func printQR(url string, info *color.Color) {
-	fmt.Println()
-	info.Printf(" URL: %s\n", url)
-	fmt.Println("📱 Отсканируй QR-код:")
-	fmt.Println()
-	qrterminal.Generate(url, qrterminal.L, os.Stdout)
-	fmt.Println()
+	if len(candidates) > 0 {
+		return candidates[0], nil
+	}
+
+	return "", fmt.Errorf("не удалось найти локальный IP")
 }
