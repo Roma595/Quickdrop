@@ -38,7 +38,7 @@ brews:
       name: homebrew-quickdrop
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
-    homepage: "https://github.com/RomaS95/Quickdrop"
+    homepage: "https://github.com/Roma595/Quickdrop"
     description: "Fast and beautiful CLI tool for file transfer via QR codes"
     license: "MIT"
     install: |
