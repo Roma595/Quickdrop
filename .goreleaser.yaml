@@ -1,0 +1,43 @@
+# .goreleaser.yaml
+version: 2
+
+# Сборка бинарников
+builds:
+  - id: quickdrop
+    binary: quickdrop
+    main: ./main.go
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.Version={{ .Version }}
+
+# Упаковка в архивы
+archives:
+  - format: zip
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+# Homebrew Tap
+brews:
+  - repository:
+      owner: RomaS95
+      name: homebrew-quickdrop
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/RomaS95/Quickdrop"
+    description: "Fast and beautiful CLI tool for file transfer via QR codes"
+    license: "MIT"
+    install: |
+      bin.install "quickdrop"
