@@ -31,7 +31,7 @@ archives:
       - LICENSE
 
 # Homebrew Tap (актуальный синтаксис v2)
-homebrews:
+brews:
   - name: quickdrop
     repository:
       owner: Roma595
