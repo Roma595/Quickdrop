@@ -30,11 +30,11 @@ archives:
       - README.md
       - LICENSE
 
-# Homebrew Tap (правильный синтаксис для v2)
-brews:
+# Homebrew Tap (актуальный синтаксис v2)
+homebrews:
   - name: quickdrop
     repository:
-      owner: RomaS95
+      owner: Roma595
       name: homebrew-quickdrop
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
