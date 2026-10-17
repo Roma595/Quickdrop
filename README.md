@@ -24,4 +24,4 @@
 ### Вариант 2: Установка через Go
 Если у вас установлен Go, вы можете установить инструмент одной командой:
 ```bash
-go install github.com/RomaS95/Quickdrop@latest
+go install github.com/Roma595/Quickdrop@latest
