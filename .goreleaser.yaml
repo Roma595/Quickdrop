@@ -21,16 +21,17 @@ builds:
     ldflags:
       - -s -w -X main.Version={{ .Version }}
 
-# Упаковка в архивы
+# Упаковка в архивы (новый синтаксис v2)
 archives:
-  - format: zip
+  - formats:
+      - zip
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE
 
-# Homebrew Tap
-brews:
+# Homebrew Tap (новый синтаксис v2)
+homebrew_taps:
   - repository:
       owner: RomaS95
       name: homebrew-quickdrop
